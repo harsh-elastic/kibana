@@ -245,6 +245,7 @@ The current YAML files are Worker stubs rather than final Watch-team definitions
 10. Every child workflow the Worker calls with `workflow.execute` or `workflow.executeAsync`, directly or through another child, sets `run-as-mode: inherit` with a literal `workflow-id` (see [Worker lifecycle](#worker-lifecycle)). Action workflows keep the default identity.
 11. An AI index the Worker writes is declared in `server/context_engine/ai_indices.ts` and listed in `ALERTZERO_AI_INDICES`, one entry per index. Set `spaceScopedTemplate` when Context Engine has to scope its documents by space: AlertZero then installs a template that maps `permissions.kibana.privileges` as `nested` and refuses writes until it is installed. Index ids and template names are permanent.
 12. Steps and feature flags the Worker owns go in its `WorkerServerDefinition`, kept with the Worker's code and listed once in `WORKER_SERVER_DEFINITIONS` (`server/workers/index.ts`; not to be confused with `server/managed_workflows/workers/`, which holds Worker settings). Steps read platform services through `WorkerServerContext`; a service it does not offer yet is added there.
+13. Each Worker event the `alertzero.reportWorkerOutcome` step reports is declared in the Worker's own telemetry files (see [Adding an event](server/telemetry/README.md#adding-an-event)).
 
 The Workers service owns per-space installation, reading persisted values, enable/disable, and upgrades. Settings responses carry a logical revision (`settingsRevision`, `null` before the per-space document exists). A settings PATCH sends the revision its draft was built from; the server returns 409 when the stored revision differs and the client keeps the draft. Compare-then-write, not an atomic guard.
 
@@ -378,6 +379,7 @@ AlertZero is not live. A new required extra or schedule key that has a default i
 | Managed Worker YAML, renderers, and template value types | `kbn-workflows/managed/definitions/alertzero` |
 | Worker settings defaults, validation, patches, and API projection | `plugins/alertzero/server/managed_workflows/workers` |
 | Worker steps and feature flags | The Worker's `WorkerServerDefinition`, listed in `plugins/alertzero/server/workers/index.ts` |
+| Worker telemetry events | `plugins/alertzero/common/telemetry/workers/<worker>.ts` and `plugins/alertzero/server/telemetry/workers/<worker>.*` |
 | AI indices a Worker writes | `plugins/alertzero/server/context_engine/ai_indices.ts` (`ALERTZERO_AI_INDICES`) |
 | Investigation / Proposal conversation projection | Agent Builder / Conversations (optional dep) |
 | Live Watch projection | Workflows Management via `workflowsExtensions` |
