@@ -27,7 +27,7 @@ import {
   TEMPLATE_ID_ESCALATION,
   TEMPLATE_ID_INVESTIGATION,
 } from '@kbn/alertzero-common';
-import { TRIAGE_GROUPING_FLAG } from './alert_triage/constants';
+import type { MitreAttackDataClient } from '@kbn/mitre-attack-plugin/server';
 import { getSubscriptionAvailability } from '../common/availability';
 import {
   ALERTZERO_API_PRIVILEGE_READ,
@@ -67,7 +67,12 @@ import { ConversationProposalsService } from './services/conversation_proposals/
 import { WatchWorkflowsManagementClientImpl } from './services/watches/watch_workflows_management_client';
 import { ScanFailuresService } from './services/scan_failures/scan_failures_service';
 import { ActionsService } from './services/actions/actions_service';
-import type { HuntServices } from './services/watches/hunt';
+import { getHuntServices } from './services/watches/hunt/create_hunt_services';
+import {
+  WORKER_SERVER_DEFINITIONS,
+  createWorkerFeatureFlagValues,
+  type WorkerServerContext,
+} from './workers';
 import { listActionsTool } from './agent_builder_tools/list_actions_tool';
 import { isSpaceSupported } from './lib/is_space_supported';
 import { createAssertAlertZeroAccess } from './agent_builder_tools/assert_alertzero_access';
@@ -77,7 +82,6 @@ import { registerAttachments } from './agent_builder/attachments/register_attach
 import type { StoryProposal } from './services/investigation_summary/format_story';
 import { resolveScopedModel } from './routes/hunt/lib/scoped_model';
 import { makeIsContextEngineEnabled } from './step_types/is_context_engine_enabled';
-import { makeScopedResolveHostEnrollment } from './services/fleet/resolve_host_enrollment';
 import { enumerateSpaceIds } from './lib/enumerate_space_ids';
 import { ThreatIntelSupplyService } from './services/threat_intel_supply';
 import {
@@ -128,11 +132,14 @@ export class AlertZeroPlugin
   >['attachments'];
   private searchInferenceEndpoints?: AlertZeroStartDependencies['searchInferenceEndpoints'];
   private inference?: AlertZeroStartDependencies['inference'];
-  private huntServices?: HuntServices;
+  private mitreDataClient?: MitreAttackDataClient;
   private fleetAgentService?: AgentService;
   private coreStart?: CoreStart;
-  private triageGroupingEnabled = true;
-  private triageGroupingFlagSubscription?: Subscription;
+  private readonly workerFeatureFlags = createWorkerFeatureFlagValues(
+    WORKER_SERVER_DEFINITIONS.flatMap(({ featureFlags = [] }) => featureFlags)
+  );
+  private workerFeatureFlagsSubscription?: Subscription;
+  private readonly workerContext: WorkerServerContext;
   private scanFailuresService?: ScanFailuresService;
   private threatIntelSupplyService?: ThreatIntelSupplyService;
 
@@ -149,6 +156,25 @@ export class AlertZeroPlugin
     this.logger = context.logger.get();
     this.config = context.config.get();
     this.isServerless = context.env.packageInfo.buildFlavor === 'serverless';
+    this.workerContext = this.createWorkerServerContext();
+  }
+
+  private createWorkerServerContext(): WorkerServerContext {
+    return {
+      logger: this.logger.get('steps'),
+      getActionsService: () => this.requireActionsService(),
+      getConversations: () => this.requireAgentBuilderConversations(),
+      getProposalsPlugin: () => this.requireProposals(),
+      getInference: () => this.inference,
+      getSearchInferenceEndpoints: () => this.searchInferenceEndpoints,
+      getMitreDataClient: () => this.mitreDataClient,
+      getFleetAgentService: () => this.fleetAgentService,
+      getTaskManager: () => this.requireStarted(this.taskManager, 'Task Manager'),
+      getWorkflowsManagement: () => this.workflowsManagementApi,
+      getInternalEsClient: () => this.requireCoreStart().elasticsearch.client.asInternalUser,
+      isContextEngineEnabled: makeIsContextEngineEnabled(() => this.requireCoreStart()),
+      getFeatureFlag: (flag) => this.workerFeatureFlags.get(flag),
+    };
   }
 
   private readonly registerThreatIntelSupplyWorkflowInstaller = (
@@ -257,30 +283,12 @@ export class AlertZeroPlugin
 
     registerAlertZeroInferenceFeatures(searchInferenceEndpoints, this.logger.get('inference'));
     // Steps register during setup but only run after start; deps resolve lazily.
-    const stepsLogger = this.logger.get('steps');
     registerStepDefinitions({
       workflowsExtensions,
-      getActionsService: () => this.requireActionsService(),
-      getConversations: () => this.requireAgentBuilderConversations(),
+      context: this.workerContext,
       resolveChatModel: (request) => this.resolveSummaryChatModel(request),
-      getProposals: (proposalIds, spaceId, request) =>
+      readProposals: (proposalIds, spaceId, request) =>
         this.readProposals(proposalIds, spaceId, request),
-      getHuntServices: () => this.requireHuntServices(),
-      getResolveHostEnrollment: makeScopedResolveHostEnrollment(
-        () => this.fleetAgentService,
-        stepsLogger
-      ),
-      isContextEngineEnabled: makeIsContextEngineEnabled(() => this.requireCoreStart()),
-      getInternalEsClient: () => this.requireCoreStart().elasticsearch.client.asInternalUser,
-      getTaskManager: () => this.requireStarted(this.taskManager, 'Task Manager'),
-      getWorkflowsManagement: () =>
-        this.requireStarted(this.workflowsManagementApi, 'Workflows management'),
-      grouping: {
-        getProposals: () => this.requireProposals(),
-        getWorkflowsManagement: () => this.workflowsManagementApi,
-        isGroupingEnabled: async () => this.triageGroupingEnabled,
-      },
-      logger: stepsLogger,
     });
 
     features.registerKibanaFeature({
@@ -339,7 +347,7 @@ export class AlertZeroPlugin
       getActionsService: () => this.requireActionsService(),
       getAgentBuilderConversations: () => this.requireAgentBuilderConversations(),
       getAgentBuilderAttachments: () => this.requireAgentBuilderAttachments(),
-      getHuntServices: () => this.requireHuntServices(),
+      getHuntServices: () => getHuntServices(this.workerContext),
       getScanFailuresService: () => this.requireScanFailuresService(),
       getThreatIntelSupplyService: () => this.threatIntelSupplyService,
       isServerless: this.isServerless,
@@ -360,12 +368,7 @@ export class AlertZeroPlugin
     this.spaces = plugins.spaces;
     this.taskManager = plugins.taskManager;
     this.coreStart = core;
-    // The kill switch for Alert Triage grouping. It stays on where no flag provider exists.
-    this.triageGroupingFlagSubscription = core.featureFlags
-      .getBooleanValue$(TRIAGE_GROUPING_FLAG, true)
-      .subscribe((enabled) => {
-        this.triageGroupingEnabled = enabled;
-      });
+    this.workerFeatureFlagsSubscription = this.workerFeatureFlags.subscribe(core.featureFlags);
     this.fleetAgentService = plugins.fleet?.agentService;
     this.proposals = plugins.proposals;
     this.agentBuilderConversations = plugins.agentBuilder?.conversations;
@@ -466,15 +469,7 @@ export class AlertZeroPlugin
 
     this.scanFailuresService = new ScanFailuresService(management, this.logger);
 
-    const mitreDataClient = plugins.mitreAttack?.getMitreDataClient?.();
-
-    this.huntServices = {
-      getProposalsService: () => this.requireProposals().getProposalsService(),
-      getProposalPrivileges: () => this.requireProposals().getProposalPrivileges(),
-      getInference: () => plugins.inference,
-      getSearchInferenceEndpoints: () => plugins.searchInferenceEndpoints,
-      mitreDataClient,
-    };
+    this.mitreDataClient = plugins.mitreAttack?.getMitreDataClient?.();
 
     return this.alertZeroStartContract();
   }
@@ -572,10 +567,6 @@ export class AlertZeroPlugin
     }
   }
 
-  private requireHuntServices(): HuntServices {
-    return this.requireStarted(this.huntServices, 'Hunt services');
-  }
-
   private requireCoreStart(): CoreStart {
     return this.requireStarted(this.coreStart, 'CoreStart');
   }
@@ -589,6 +580,6 @@ export class AlertZeroPlugin
   }
 
   stop() {
-    this.triageGroupingFlagSubscription?.unsubscribe();
+    this.workerFeatureFlagsSubscription?.unsubscribe();
   }
 }

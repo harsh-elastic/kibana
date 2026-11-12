@@ -14,6 +14,7 @@ import {
   TEMPLATE_ID_INVESTIGATION,
 } from '@kbn/alertzero-common';
 import { loggerMock } from '@kbn/logging-mocks';
+import { BehaviorSubject } from 'rxjs';
 import type { AlertZeroConfig } from './config';
 import { ALERTZERO_API_PRIVILEGE_READ, ALERTZERO_API_PRIVILEGE_WRITE } from '../common/constants';
 import { AlertZeroPlugin } from './plugin';
@@ -468,6 +469,58 @@ describe('AlertZeroPlugin feature-flag gating', () => {
       expect(
         workflowsExtensions.registerStepDefinition.mock.calls.map(([def]) => def.id)
       ).toContain(ReportWorkerOutcomeStepId);
+    });
+
+    it('registers every shared and Watch step type during setup', () => {
+      const plugin = new AlertZeroPlugin(createContext(createConfig({ enabled: true })));
+      const workflowsExtensions = {
+        registerManagedWorkflowOwner: jest.fn(),
+        registerStepDefinition: jest.fn(),
+      };
+
+      plugin.setup(
+        coreMock.createSetup() as never,
+        {
+          features: { registerKibanaFeature: jest.fn() },
+          workflowsExtensions,
+          workflowsManagement: { management: {} },
+        } as never
+      );
+
+      expect(
+        workflowsExtensions.registerStepDefinition.mock.calls.map(([def]) => def.id).sort()
+      ).toEqual([
+        'alertzero.investigation.summarize',
+        'alertzero.reportWorkerOutcome',
+        'alertzero.resolveProposals',
+        'alertzero.triage.groupFpCandidates',
+        'alertzero.triage.headroom',
+        'alertzero.triage.joinProposal',
+        'alertzero.triage.loadAlerts',
+        'alertzero.triage.planSweep',
+        'alertzero.triage.retagProposalAlerts',
+        'alertzero.triage.tagPatternKeys',
+        'hunt.packageReport',
+      ]);
+    });
+
+    it('subscribes to each Watch feature flag in start and drops it in stop', () => {
+      const plugin = new AlertZeroPlugin(createContext(createConfig({ enabled: true })));
+      const coreStart = coreMock.createStart();
+      const flag$ = new BehaviorSubject(true);
+      jest.mocked(coreStart.featureFlags.getBooleanValue$).mockReturnValue(flag$);
+
+      plugin.start(coreStart, {} as never);
+
+      expect(coreStart.featureFlags.getBooleanValue$).toHaveBeenCalledWith(
+        'alertzero.triageGrouping',
+        true
+      );
+      expect(flag$.observed).toBe(true);
+
+      plugin.stop();
+
+      expect(flag$.observed).toBe(false);
     });
 
     it('registers the per-space enablement advanced setting', () => {
