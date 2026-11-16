@@ -5,7 +5,7 @@
  * 2.0.
  */
 
-import { createWorkerServerContextMock } from '../workers/worker_server_context.mock';
+import { createWorkerServerContextMock } from '../worker_server_context.mock';
 import { TRIAGE_GROUPING_KILL_SWITCH, alertTriageServerDefinition } from './worker_server';
 
 const stepsFor = (context = createWorkerServerContextMock()) =>
