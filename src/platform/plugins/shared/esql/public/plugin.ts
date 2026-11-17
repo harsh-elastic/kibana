@@ -48,7 +48,7 @@ interface EsqlPluginStartDependencies {
   share: SharePluginStart;
   data: DataPublicPluginStart;
   fieldFormats: FieldFormatsStart;
-  fileUpload: FileUploadPluginStart;
+  fileUpload?: FileUploadPluginStart;
   kql: KqlPluginStart;
 }
 
@@ -147,16 +147,18 @@ export class EsqlPlugin implements Plugin<EsqlPluginSetup, EsqlPluginStart> {
       return createESQLControlAction;
     });
 
-    /** Async register the index editor UI actions */
-    registerIndexEditorActions({
-      data,
-      coreStart: core,
-      share,
-      uiActions,
-      fieldFormats,
-      fileUpload,
-      kql,
-    });
+    // Lookup index editor depends on fileUpload; skip when the plugin is absent (e.g. OSS).
+    if (fileUpload) {
+      registerIndexEditorActions({
+        data,
+        coreStart: core,
+        share,
+        uiActions,
+        fieldFormats,
+        fileUpload,
+        kql,
+      });
+    }
 
     const variablesService = new EsqlVariablesService();
 

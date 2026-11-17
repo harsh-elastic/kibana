@@ -14,7 +14,9 @@
       "fieldsMetadata",
       "usageCollection",
       "licensing",
-      "searchInferenceEndpoints"
+      "searchInferenceEndpoints",
+      "fileUpload",
+      "inference"
     ],
     "requiredPlugins": [
       "data",
@@ -22,10 +24,8 @@
       "uiActions",
       "contentManagement",
       "share",
-      "fileUpload",
       "fieldFormats",
-      "kql",
-      "inference"
+      "kql"
     ],
     "requiredBundles": [
       "kibanaReact",
